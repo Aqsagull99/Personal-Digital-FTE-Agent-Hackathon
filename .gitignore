@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Obsidian
+vault/.obsidian/workspace.json
+vault/.obsidian/workspace-mobile.json
+
+# Secrets (NEVER commit)
+.env
+.env.example
+credentials.json
+token.json
+*.credentials.json
+**/secrets/
+credentials.json
+token.json
+token_send.json
+AI_Employee_Vault/
