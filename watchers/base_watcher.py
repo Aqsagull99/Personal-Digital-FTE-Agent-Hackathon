@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from abc import ABC, abstractmethod
 from datetime import datetime
+from json import JSONDecodeError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,14 +55,21 @@ class BaseWatcher(ABC):
 
         # Read existing logs or create new
         if log_file.exists():
-            with open(log_file, 'r') as f:
-                logs = json.load(f)
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    logs = json.load(f)
+                if not isinstance(logs, list):
+                    self.logger.warning(f"Log file has unexpected format, resetting: {log_file}")
+                    logs = []
+            except (JSONDecodeError, OSError) as e:
+                self.logger.warning(f"Log file unreadable/corrupt, resetting: {log_file} ({e})")
+                logs = []
         else:
             logs = []
 
         logs.append(log_entry)
 
-        with open(log_file, 'w') as f:
+        with open(log_file, 'w', encoding='utf-8') as f:
             json.dump(logs, f, indent=2)
 
         self.logger.info(f"Logged: {action_type}")
