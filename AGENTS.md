@@ -70,7 +70,7 @@ Claude Code is the brain. It reads the vault, understands context from `Company_
 | Category | Skills | What They Do |
 |----------|--------|-------------|
 | **Monitoring** | check-gmail, check-linkedin, check-whatsapp, check-facebook, check-instagram, check-twitter | Invoke watchers and process results |
-| **Posting** | post-linkedin, post-twitter, post-social | Create content with approval workflow |
+| **Posting** | post-linkedin, post-twitter, post-facebook, post-instagram | Create content with approval workflow |
 | **Actions** | send-email, complete-task, process-inbox, scan-inbox | Execute tasks via MCP servers |
 | **Planning** | create-plan, ceo-briefing, manage-schedule | Generate plans, reports, schedules |
 | **Operations** | check-status, update-dashboard, odoo-accounting | System health, vault updates, ERP |
