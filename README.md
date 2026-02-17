@@ -3,13 +3,14 @@
 A local-first, autonomous Digital FTE (Full-Time Equivalent) that manages personal and business affairs 24/7. It monitors Gmail, WhatsApp, LinkedIn, Twitter, Facebook, and Instagram — reasons about what needs doing — and executes with human-in-the-loop approval for sensitive operations.
 
 **Hackathon:** Personal AI Employee Hackathon 0
-**Target Tier:** Gold (Autonomous Employee)
+**Target Tier:** Platinum (In Progress)
 **Architecture:** [AGENTS.md](./AGENTS.md)
 
 ## Hackathon Documentation
 
 - Architecture (submission doc): [docs/architecture.md](./docs/architecture.md)
 - Lessons learned (submission doc): [docs/lessons-learned.md](./docs/lessons-learned.md)
+- Platinum runbook (cloud + local split): [docs/platinum-runbook.md](./docs/platinum-runbook.md)
 - Detailed agent architecture reference: [AGENTS.md](./AGENTS.md)
 
 ## How It Works
@@ -294,6 +295,18 @@ pm2 startup
 | 11 | Documentation | This README + AGENTS.md |
 | 12 | All AI as Agent Skills | Done (34 skills) |
 
+## Platinum Tier Checklist
+
+| # | Requirement | Status |
+|---|-------------|--------|
+| 1 | Run AI Employee on cloud 24/7 | Partial (runbook defined; deployment proof pending) |
+| 2 | Work-zone specialization (Cloud draft-only, Local final actions) | Partial (policy documented; enforcement hardening pending) |
+| 3 | Synced vault delegation with claim-by-move and single-writer dashboard | Partial (folders exist; distributed-ops proof pending) |
+| 4 | Secrets excluded from vault sync | Done (gitignore + policy documented) |
+| 5 | Odoo on cloud VM with HTTPS/backups/health monitoring | Partial (runbook defined; production evidence pending) |
+| 6 | Optional A2A phase 2 path | Done (documented migration path) |
+| 7 | Platinum demo gate (cloud draft while local offline, local approve+execute) | Partial (script scaffold added; live demo evidence pending) |
+
 ## Lessons Learned
 
 1. **File-based communication works well** — markdown files in a shared vault are easy to debug, inspect in Obsidian, and version with git
@@ -329,6 +342,19 @@ It creates a timestamped folder at `evidence_pack/final_gold_YYYYMMDD_HHMMSS/` w
 - command outputs
 - copied logs/artifacts
 - requirement-wise pass/partial summary in `README.md`
+
+### One-Command Platinum Finalization
+
+Run the script below to generate a Platinum readiness evidence pack:
+
+```bash
+bash scripts/finalize_platinum.sh
+```
+
+It creates a timestamped folder at `evidence_pack/final_platinum_YYYYMMDD_HHMMSS/` with:
+- requirement-wise Platinum checks
+- cloud/local runbook coverage checks
+- demo-gate attempt logs and summary
 
 ### One-Command Silver Finalization
 
