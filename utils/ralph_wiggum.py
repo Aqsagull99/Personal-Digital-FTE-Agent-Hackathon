@@ -111,6 +111,9 @@ class RalphWiggumLoop:
 
     def check_promise_completion(self, output: str, promise: str) -> bool:
         """Check if output contains completion promise"""
+        if output is None:
+            output = ""
+
         # Check for <promise>PROMISE</promise> pattern
         promise_tag = f"<promise>{promise}</promise>"
         if promise_tag in output:
@@ -154,13 +157,13 @@ class RalphWiggumLoop:
 
         return False
 
-    def run_claude(self, prompt: str, timeout: int = 300) -> str:
+    def run_claude(self, prompt: str, timeout: int = 600) -> str:
         """
         Run Claude Code with prompt and capture output.
 
         Args:
             prompt: Prompt to send
-            timeout: Timeout in seconds
+            timeout: Timeout in seconds (default 10 min)
 
         Returns:
             Claude's output
@@ -169,12 +172,23 @@ class RalphWiggumLoop:
             # Build claude command
             cmd = ['claude', '--print', '-p', prompt]
 
+            # Copy env and unset CLAUDECODE to allow spawning from within
+            # an existing Claude Code session (avoids nested session error)
+            env = os.environ.copy()
+            env.pop('CLAUDECODE', None)
+
+            # Use project root as cwd (not vault — vault may be on slow
+            # Windows FS via WSL symlink)
+            project_root = Path(__file__).parent.parent
+            cwd = str(project_root)
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=str(self.vault_path)
+                cwd=cwd,
+                env=env
             )
 
             return result.stdout + result.stderr

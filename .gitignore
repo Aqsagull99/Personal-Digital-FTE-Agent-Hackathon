@@ -24,3 +24,13 @@ credentials.json
 token.json
 token_send.json
 AI_Employee_Vault/
+
+# Browser/session auth data
+.facebook_session/
+.instagram_session/
+.twitter_session/
+.whatsapp_session/
+
+# Local artifacts
+evidence_pack/
+venv/

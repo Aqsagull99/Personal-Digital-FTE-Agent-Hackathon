@@ -1,7 +1,16 @@
 """
-LinkedIn Watcher - Monitors LinkedIn for new messages and notifications
+LinkedIn Watcher - Monitors LinkedIn profile and manages posting
 Silver Tier Requirement: Additional Watcher script
-Uses LinkedIn API with environment variables
+Uses LinkedIn Official API v2 (OAuth 2.0 access token)
+
+Working features:
+  - Read profile (userinfo endpoint)
+  - Create posts (v2/ugcPosts endpoint)
+  - HITL approval workflow for posts
+
+Requires LINKEDIN_ACCESS_TOKEN in .env with w_member_social scope.
+Reading messages/notifications requires r_member_social scope (not available
+on most developer apps). If added later, extend _check_messages().
 """
 import sys
 import json
@@ -9,7 +18,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 
-from linkedin_api import Linkedin
+import requests
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -22,223 +31,225 @@ from base_watcher import BaseWatcher
 
 class LinkedInWatcher(BaseWatcher):
     """
-    Watches LinkedIn for new messages and notifications using API.
+    Watches LinkedIn and manages posting via official API.
 
     Usage:
         python linkedin_watcher.py [vault_path]
 
-    Requires LinkedIn credentials in .env file.
+    Requires LINKEDIN_ACCESS_TOKEN in .env file.
     """
 
     def __init__(self, vault_path: str):
         super().__init__(vault_path, check_interval=300)  # Check every 5 minutes
 
-        # Keywords that indicate important messages
         self.important_keywords = [
             'job', 'opportunity', 'offer', 'interview',
             'project', 'collaboration', 'partnership',
             'urgent', 'asap', 'important'
         ]
 
-        # Initialize LinkedIn API client using environment variables
-        self.linkedin_client = self._init_linkedin_api()
+        self.access_token = os.getenv('LINKEDIN_ACCESS_TOKEN')
+        self.api_base_url = 'https://api.linkedin.com'
+        self.profile = None
+        self.person_urn = None
         self.processed_items = set()
-        self.access_token = getattr(self, 'access_token', None)  # Initialize access token
-        self.api_base_url = 'https://api.linkedin.com/v2'
 
-    def _init_linkedin_api(self):
-        """Initialize LinkedIn API client using environment variables"""
-        # First try OAuth 2.0 authentication (preferred method for production)
-        client_id = os.getenv('LINKEDIN_CLIENT_ID')
-        client_secret = os.getenv('LINKEDIN_CLIENT_SECRET')
-        access_token = os.getenv('LINKEDIN_ACCESS_TOKEN')
-        
-        if access_token:
-            self.logger.info("LinkedIn access token found, will use for API calls")
-            # Store access token for API calls
-            self.access_token = access_token
-            return True  # Return True to indicate we have credentials
-        elif all([client_id, client_secret]):
-            self.logger.info("LinkedIn OAuth credentials found, but no access token")
-            # We have OAuth credentials but no token
-            self.access_token = None
-            return None
-        else:
-            # Try email/password authentication as fallback
-            linkedin_email = os.getenv('LINKEDIN_EMAIL')
-            linkedin_password = os.getenv('LINKEDIN_PASSWORD')
-
-            if linkedin_email and linkedin_password:
-                try:
-                    # Initialize with email/password (unofficial API)
-                    client = Linkedin(linkedin_email, linkedin_password, refresh_cookies=True)
-                    self.logger.info("LinkedIn client initialized with email/password")
-                    return client
-                except Exception as e:
-                    self.logger.error(f"Failed to initialize LinkedIn client: {e}")
-                    return None
-            else:
-                self.logger.warning("No LinkedIn credentials found in environment variables")
-                return None
-
-    def check_for_updates(self) -> list:
-        """Check LinkedIn for new messages and notifications using API"""
-        updates = []
-
-        # If we have an access token, try using the official API
+        # Validate token and load profile
         if self.access_token:
-            try:
-                # Check for updates using official API
-                api_updates = self._check_updates_via_api()
-                updates.extend(api_updates)
-            except Exception as e:
-                self.logger.warning(f'API check failed: {e}')
-                # Fall back to other methods if API fails
-        elif self.linkedin_client:
-            # Use the existing client if available
-            try:
-                # Check messages
-                messages = self._check_messages()
-                updates.extend(messages)
-
-                # Check notifications
-                notifications = self._check_notifications()
-                updates.extend(notifications)
-            except Exception as e:
-                self.logger.error(f'Error checking LinkedIn: {e}')
+            self.profile = self._get_profile()
+            if self.profile:
+                self.person_urn = f"urn:li:person:{self.profile.get('sub', '')}"
+                self.logger.info(
+                    f"LinkedIn authenticated as: {self.profile.get('name', 'Unknown')}"
+                )
+            else:
+                self.logger.error("LinkedIn access token invalid or expired")
         else:
-            self.logger.warning("No LinkedIn client or access token available - skipping check")
+            self.logger.error("LINKEDIN_ACCESS_TOKEN not set in .env")
 
-        return updates
-
-    def _check_updates_via_api(self) -> list:
-        """Check LinkedIn for updates using official API with access token"""
-        updates = []
-        
-        if not self.access_token:
-            return updates
-            
-        import requests
-        
-        headers = {
+    def _get_headers(self):
+        """Get API request headers"""
+        return {
             'Authorization': f'Bearer {self.access_token}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'X-Restli-Protocol-Version': '2.0.0'
         }
-        
+
+    def _get_profile(self) -> dict | None:
+        """Get authenticated user's profile via userinfo endpoint"""
         try:
-            # Get user's feed for recent activity
-            response = requests.get(
-                f'{self.api_base_url}/network/feed',
-                headers=headers,
-                params={'q': 'shareFeed', 'count': 10},
+            r = requests.get(
+                f'{self.api_base_url}/v2/userinfo',
+                headers={'Authorization': f'Bearer {self.access_token}'},
                 timeout=10
             )
-
-            if response.status_code == 200:
-                data = response.json()
-                # Process feed items
-                for item in data.get('elements', []):
-                    # Extract relevant information
-                    post_id = item.get('id')
-                    if post_id and post_id not in self.processed_items:
-                        # Check if content contains important keywords
-                        commentary = item.get('commentary', {}).get('text', '') if isinstance(item.get('commentary'), dict) else str(item.get('commentary', ''))
-                        if any(kw in commentary.lower() for kw in self.important_keywords):
-                            updates.append({
-                                'type': 'linkedin_feed_item',
-                                'content': commentary[:400],
-                                'timestamp': datetime.now().isoformat(),
-                                'id': post_id
-                            })
-                            self.processed_items.add(post_id)
-            elif response.status_code == 403:
-                self.logger.warning("Insufficient permissions to access feed via API")
-            elif response.status_code == 401:
-                self.logger.error("Invalid or expired access token")
+            if r.status_code == 200:
+                return r.json()
             else:
-                self.logger.warning(f"API response status: {response.status_code}")
-                
+                self.logger.error(f"Profile fetch failed: {r.status_code} {r.text[:200]}")
+                return None
         except Exception as e:
-            self.logger.warning(f'Error checking updates via API: {e}')
+            self.logger.error(f"Profile fetch error: {e}")
+            return None
+
+    def check_for_updates(self) -> list:
+        """Check LinkedIn for actionable items.
+
+        Currently checks:
+          - Approved posts waiting to be published
+          - Profile status (token validity)
+
+        When r_member_social scope is available, add:
+          - Messages, notifications, feed items
+        """
+        updates = []
+
+        if not self.access_token or not self.profile:
+            self.logger.warning("No valid LinkedIn credentials - skipping check")
+            return updates
+
+        # Check for approved posts that need publishing
+        approved_posts = self._check_approved_posts()
+        updates.extend(approved_posts)
 
         return updates
 
-    def _check_messages(self) -> list:
-        """Check LinkedIn messaging for new messages"""
-        messages = []
+    def _check_approved_posts(self) -> list:
+        """Check /Approved folder for LinkedIn posts waiting to be published"""
+        approved_dir = self.vault_path / 'Approved'
+        if not approved_dir.exists():
+            return []
 
-        if not self.linkedin_client:
-            return messages
+        posts = []
+        for f in approved_dir.glob('LINKEDIN_POST_*.md'):
+            item_id = f.stem
+            if item_id in self.processed_items:
+                continue
+
+            content = self._extract_post_content(f)
+            if content:
+                posts.append({
+                    'type': 'linkedin_approved_post',
+                    'content': content,
+                    'file_path': str(f),
+                    'timestamp': datetime.now().isoformat(),
+                    'id': item_id
+                })
+                self.processed_items.add(item_id)
+
+        if posts:
+            self.logger.info(f"Found {len(posts)} approved LinkedIn posts to publish")
+        return posts
+
+    def _extract_post_content(self, file_path: Path) -> str:
+        """Extract post content from an approval markdown file"""
+        text = file_path.read_text()
+        lines = text.split('\n')
+        capturing = False
+        content_lines = []
+
+        for line in lines:
+            if '### Content to Post:' in line or '**Content to post:**' in line:
+                capturing = True
+                continue
+            if capturing and (line.startswith('###') or line.startswith('## ')):
+                break
+            if capturing:
+                content_lines.append(line)
+
+        return '\n'.join(content_lines).strip()
+
+    def post_to_linkedin(self, content: str) -> dict:
+        """Post content to LinkedIn using official v2/ugcPosts API.
+
+        Returns:
+            dict with 'success' bool, 'post_id' or 'error'
+        """
+        if not self.person_urn:
+            return {'success': False, 'error': 'Not authenticated'}
+
+        post_data = {
+            'author': self.person_urn,
+            'lifecycleState': 'PUBLISHED',
+            'specificContent': {
+                'com.linkedin.ugc.ShareContent': {
+                    'shareCommentary': {
+                        'text': content
+                    },
+                    'shareMediaCategory': 'NONE'
+                }
+            },
+            'visibility': {
+                'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC'
+            }
+        }
 
         try:
-            # The unofficial LinkedIn API doesn't have a direct method to fetch messages
-            # This is a simplified approach - actual implementation would depend on the API capabilities
-            # For now, we'll simulate checking for messages
-            
-            # In a real implementation, you would use the LinkedIn API to fetch messages
-            # For example: self.linkedin_client.get_messages()
-            
-            # Simulating message check - in reality, you'd fetch actual messages
-            # This is a placeholder for the actual API call
-            self.logger.info("Checking LinkedIn messages (API implementation needed)")
-            
-            # Placeholder for actual API call
-            # messages_data = self.linkedin_client.get_messages()
-            # for message in messages_data:
-            #     if message['id'] not in self.processed_items:
-            #         messages.append({
-            #             'type': 'linkedin_message',
-            #             'sender': message.get('sender', 'Unknown'),
-            #             'preview': message.get('preview', ''),
-            #             'timestamp': message.get('timestamp', datetime.now().isoformat()),
-            #             'id': message['id']
-            #         })
-            #         self.processed_items.add(message['id'])
+            r = requests.post(
+                f'{self.api_base_url}/v2/ugcPosts',
+                headers=self._get_headers(),
+                json=post_data,
+                timeout=15
+            )
+
+            if r.status_code == 201:
+                post_id = r.json().get('id', 'unknown')
+                self.logger.info(f"Posted to LinkedIn: {post_id}")
+                return {'success': True, 'post_id': post_id}
+            else:
+                error = r.text[:300]
+                self.logger.error(f"LinkedIn post failed ({r.status_code}): {error}")
+                return {'success': False, 'error': f"{r.status_code}: {error}"}
 
         except Exception as e:
-            self.logger.warning(f'Error checking messages: {e}')
+            self.logger.error(f"LinkedIn post error: {e}")
+            return {'success': False, 'error': str(e)}
 
-        return messages
+    def create_approval_request(self, content: str) -> Path:
+        """Create HITL approval file for a LinkedIn post"""
+        timestamp = datetime.now()
+        filename = f"LINKEDIN_POST_{timestamp.strftime('%Y%m%d_%H%M%S')}.md"
+        pending_dir = self.vault_path / 'Pending_Approval'
+        pending_dir.mkdir(exist_ok=True)
 
-    def _check_notifications(self) -> list:
-        """Check LinkedIn notifications"""
-        notifications = []
+        author_name = self.profile.get('name', 'Unknown') if self.profile else 'Unknown'
 
-        if not self.linkedin_client:
-            return notifications
+        approval_content = f'''---
+type: linkedin_post_approval
+action: post_to_linkedin
+created: {timestamp.isoformat()}
+author: {author_name}
+status: pending
+---
 
-        try:
-            # The unofficial LinkedIn API doesn't have a direct method to fetch notifications
-            # This is a simplified approach - actual implementation would depend on the API capabilities
-            # For now, we'll simulate checking for notifications
-            
-            # In a real implementation, you would use the LinkedIn API to fetch notifications
-            # For example: self.linkedin_client.get_notifications()
-            
-            # Simulating notification check - in reality, you'd fetch actual notifications
-            self.logger.info("Checking LinkedIn notifications (API implementation needed)")
-            
-            # Placeholder for actual API call
-            # notifications_data = self.linkedin_client.get_notifications()
-            # for notification in notifications_data:
-            #     if any(kw in notification.get('text', '').lower() for kw in self.important_keywords):
-            #         if notification['id'] not in self.processed_items:
-            #             notifications.append({
-            #                 'type': 'linkedin_notification',
-            #                 'content': notification.get('text', '')[:200],
-            #                 'timestamp': notification.get('timestamp', datetime.now().isoformat()),
-            #                 'id': notification['id']
-            #             })
-            #             self.processed_items.add(notification['id'])
+## LinkedIn Post Request
 
-        except Exception as e:
-            self.logger.warning(f'Error checking notifications: {e}')
+### Content to Post:
+{content}
 
-        return notifications
+### Post Details
+- **Author:** {author_name}
+- **Visibility:** Public
+- **Created:** {timestamp.strftime('%Y-%m-%d %H:%M')}
+
+### To Approve
+Move this file to /Approved folder.
+
+### To Reject
+Move this file to /Rejected folder.
+
+---
+*This post requires human approval before publishing.*
+'''
+
+        approval_path = pending_dir / filename
+        approval_path.write_text(approval_content)
+        self.logger.info(f"Created LinkedIn post approval request: {filename}")
+        return approval_path
 
     def determine_priority(self, item: dict) -> str:
         """Determine priority based on content"""
-        content = f"{item.get('sender', '')} {item.get('preview', '')} {item.get('content', '')}".lower()
+        content = item.get('content', '').lower()
 
         if any(kw in content for kw in ['urgent', 'asap', 'offer', 'interview']):
             return 'P1'
@@ -247,42 +258,76 @@ class LinkedInWatcher(BaseWatcher):
         return 'P3'
 
     def create_action_file(self, item: dict) -> Path:
-        """Create action file from LinkedIn update"""
+        """Process an approved post: publish it and move files"""
+        if item['type'] == 'linkedin_approved_post':
+            # Publish the approved post
+            result = self.post_to_linkedin(item['content'])
+
+            timestamp = datetime.now()
+            priority = self.determine_priority(item)
+
+            if result['success']:
+                status_text = f"Published successfully: {result['post_id']}"
+                status = 'completed'
+            else:
+                status_text = f"Failed to publish: {result['error']}"
+                status = 'failed'
+
+            content = f'''---
+type: linkedin_post_result
+source: linkedin_watcher
+priority: {priority}
+created: {timestamp.isoformat()}
+status: {status}
+post_id: {result.get('post_id', 'none')}
+---
+
+## LinkedIn Post Result
+
+**Status:** {status_text}
+
+**Content Posted:**
+{item['content']}
+
+## Result
+{'Post was published to LinkedIn.' if result['success'] else f'Post failed: {result["error"]}'}
+'''
+
+            filename = f"LINKEDIN_post_{timestamp.strftime('%H%M%S')}.md"
+            action_path = self.needs_action / filename
+            action_path.write_text(content)
+
+            # Move the approved file to Done if successful
+            if result['success']:
+                source = Path(item['file_path'])
+                if source.exists():
+                    done_dir = self.vault_path / 'Done'
+                    done_dir.mkdir(exist_ok=True)
+                    source.rename(done_dir / source.name)
+                    self.logger.info(f"Moved {source.name} to Done")
+
+            self.log_action('linkedin_post_processed', {
+                'type': item['type'],
+                'priority': priority,
+                'success': result['success'],
+                'action_file': filename
+            })
+
+            return action_path
+
+        # Default action file for other types (future: messages, notifications)
         priority = self.determine_priority(item)
         timestamp = datetime.now()
 
-        if item['type'] == 'linkedin_message':
-            content = f'''---
-type: linkedin_message
-source: linkedin_watcher
-priority: {priority}
-created: {timestamp.isoformat()}
-sender: {item.get('sender', 'Unknown')}
-status: pending
----
-
-## LinkedIn Message
-
-**From:** {item.get('sender', 'Unknown')}
-
-**Preview:**
-{item.get('preview', 'No preview available')}
-
-## Suggested Actions
-- [ ] Read full message on LinkedIn
-- [ ] Reply if needed
-- [ ] Connect if relevant
-'''
-        else:  # notification
-            content = f'''---
-type: linkedin_notification
+        content = f'''---
+type: {item['type']}
 source: linkedin_watcher
 priority: {priority}
 created: {timestamp.isoformat()}
 status: pending
 ---
 
-## LinkedIn Notification
+## LinkedIn Update
 
 {item.get('content', 'No content')}
 
@@ -291,12 +336,10 @@ status: pending
 - [ ] Take action if needed
 '''
 
-        # Create unique filename
-        filename = f"LINKEDIN_{item['type'].split('_')[1]}_{timestamp.strftime('%H%M%S')}.md"
+        filename = f"LINKEDIN_update_{timestamp.strftime('%H%M%S')}.md"
         action_path = self.needs_action / filename
         action_path.write_text(content)
 
-        # Log the action
         self.log_action('linkedin_processed', {
             'type': item['type'],
             'priority': priority,
@@ -306,41 +349,38 @@ status: pending
         return action_path
 
     def run(self):
-        """Override run with cleanup"""
-        # Determine status based on credential availability
-        oauth_creds_available = bool(os.getenv('LINKEDIN_CLIENT_ID') and os.getenv('LINKEDIN_CLIENT_SECRET'))
-        email_creds_available = bool(os.getenv('LINKEDIN_EMAIL') and os.getenv('LINKEDIN_PASSWORD'))
-        
-        if self.linkedin_client:
+        """Run with status banner"""
+        if self.profile:
             status = "ACTIVE"
-        elif oauth_creds_available and email_creds_available:
-            status = "CONFIGURED (security blocking)"
-        elif oauth_creds_available or email_creds_available:
-            status = "PARTIALLY CONFIGURED"
+            user = self.profile.get('name', 'Unknown')
+        elif self.access_token:
+            status = "TOKEN INVALID/EXPIRED"
+            user = "N/A"
         else:
-            status = "INACTIVE (missing credentials)"
-        
+            status = "NO TOKEN"
+            user = "N/A"
+
         print(f'''
 ╔══════════════════════════════════════════════════════════════╗
 ║             AI Employee - LinkedIn Watcher                   ║
 ║                     Silver Tier                              ║
 ╠══════════════════════════════════════════════════════════════╣
-║  Monitoring: LinkedIn Messages & Notifications               ║
+║  User:       {user:<46}║
+║  Monitoring: Approved posts queue                            ║
+║  Capabilities: Post (API) + Profile                          ║
 ║  Interval:   {self.check_interval} seconds                             ║
-║  Status:     {status}           ║
+║  Status:     {status:<46}║
 ╚══════════════════════════════════════════════════════════════╝
 ''')
-        
-        if not self.linkedin_client:
-            if oauth_creds_available and email_creds_available:
-                print("ℹ️  OAuth credentials are properly configured but LinkedIn security blocks automated access.")
-                print("ℹ️  This is expected behavior for enhanced security.")
-            elif oauth_creds_available or email_creds_available:
-                print("⚠️  Partial credentials detected. Please check your environment variables.")
+
+        if not self.profile:
+            print("LinkedIn watcher cannot start without valid credentials.")
+            if not self.access_token:
+                print("Set LINKEDIN_ACCESS_TOKEN in .env with w_member_social scope.")
             else:
-                print("⚠️  LinkedIn API client not initialized. Please check your environment variables.")
+                print("Access token may be expired. Generate a new one from LinkedIn Developer Portal.")
             return
-        
+
         super().run()
 
 
@@ -351,12 +391,23 @@ def main():
     if default_vault.is_symlink():
         default_vault = default_vault.resolve()
 
-    if len(sys.argv) > 1:
-        vault_path = sys.argv[1]
-    else:
-        vault_path = str(default_vault)
-
+    vault_path = sys.argv[1] if len(sys.argv) > 1 else str(default_vault)
     watcher = LinkedInWatcher(vault_path)
+
+    # If called with --post, create an approval request
+    if len(sys.argv) > 2 and sys.argv[1] == '--post':
+        content = ' '.join(sys.argv[2:])
+        approval = watcher.create_approval_request(content)
+        print(f"Approval request created: {approval}")
+        return
+
+    # If called with --post-direct, post immediately (skip approval)
+    if len(sys.argv) > 2 and sys.argv[1] == '--post-direct':
+        content = ' '.join(sys.argv[2:])
+        result = watcher.post_to_linkedin(content)
+        print(f"Result: {result}")
+        return
+
     watcher.run()
 
 

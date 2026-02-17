@@ -23,7 +23,7 @@ Or install locally: https://www.odoo.com/documentation
 export ODOO_URL=http://localhost:8069
 export ODOO_DB=odoo
 export ODOO_USERNAME=admin
-export ODOO_PASSWORD=admin
+export ODOO_PASSWORD=your_odoo_password_here
 ```
 
 ## Commands

@@ -5,6 +5,7 @@ Uses browser session flow to avoid paid API dependency
 """
 import argparse
 import json
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -38,6 +39,7 @@ class TwitterPoster:
 
         self.session_path = Path(__file__).parent.parent / '.twitter_session'
         self.session_path.mkdir(exist_ok=True)
+        self.dry_run = os.getenv('DRY_RUN', 'false').lower() == 'true'
 
         self.playwright = None
         self.context = None
@@ -239,6 +241,18 @@ class TwitterPoster:
             print(f'Approval required: {approval_file}')
             return False
 
+        if self.dry_run:
+            fake_post_id = f"dryrun_tw_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            self._log_action('twitter_post', {
+                'content': content,
+                'timestamp': datetime.now().isoformat(),
+                'mode': 'dry_run',
+                'status': 'success',
+                'post_id': fake_post_id,
+            })
+            print(f'DRY_RUN enabled: simulated tweet post {fake_post_id}')
+            return True
+
         try:
             success = self._post_direct(content)
             if success:
@@ -303,7 +317,12 @@ Move this file to the `/Rejected` folder.
 
         if log_file.exists():
             with open(log_file, 'r', encoding='utf-8') as f:
-                logs = json.load(f)
+                try:
+                    logs = json.load(f)
+                    if not isinstance(logs, list):
+                        logs = []
+                except json.JSONDecodeError:
+                    logs = []
         else:
             logs = []
 

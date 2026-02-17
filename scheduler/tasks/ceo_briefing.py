@@ -27,6 +27,14 @@ try:
 except:
     ODOO_AVAILABLE = False
 
+# Try to import Self Healer
+sys.path.insert(0, str(PROJECT_ROOT / 'utils'))
+try:
+    from self_healer import run_self_healing
+    SELF_HEALER_AVAILABLE = True
+except ImportError:
+    SELF_HEALER_AVAILABLE = False
+
 
 class CEOBriefingGenerator:
     """
@@ -275,6 +283,17 @@ class CEOBriefingGenerator:
         bottlenecks = self.identify_bottlenecks(task_metrics)
         suggestions = self.generate_proactive_suggestions(task_metrics, comm_metrics, financial_metrics)
 
+        # Run self-healing check
+        self_healing_result = "Not Available"
+        if SELF_HEALER_AVAILABLE:
+            try:
+                healing_result = run_self_healing()
+                self_healing_result = f"{healing_result.get('status', 'unknown')}: {healing_result.get('message', 'No message')}"
+            except Exception as e:
+                self_healing_result = f"Error running self-healing: {str(e)}"
+        else:
+            self_healing_result = "Self-Healer not available"
+
         # Generate briefing content
         briefing_content = f'''---
 type: ceo_briefing
@@ -290,6 +309,10 @@ period: {week_start.strftime('%Y-%m-%d')} to {timestamp.strftime('%Y-%m-%d')}
 ## Executive Summary
 
 Your AI Employee processed **{task_metrics['completed']} tasks** this week with a **{task_metrics['completion_rate']}% completion rate**.
+
+## System Status
+
+- **Self-Healing Attempted**: {self_healing_result}
 
 '''
 

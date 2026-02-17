@@ -43,22 +43,32 @@ class FacebookWatcher(BaseWatcher):
         self.processed_items = set()
 
     def _init_browser(self):
-        """Initialize browser with persistent session"""
-        playwright = sync_playwright().start()
-        self.browser = playwright.chromium.launch(headless=False)
+        """Initialize browser with persistent session using user data dir"""
+        self._playwright = sync_playwright().start()
 
-        state_file = self.session_path / 'state.json'
-        self.context = self.browser.new_context(
-            storage_state=str(state_file) if state_file.exists() else None,
-            viewport={'width': 1280, 'height': 800}
+        # Use persistent context - saves ALL browser data (cookies,
+        # localStorage, indexedDB) to disk automatically like a real Chrome profile.
+        user_data_dir = str(self.session_path / 'browser_profile')
+        self.context = self._playwright.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            headless=False,
+            viewport={'width': 1280, 'height': 800},
+            args=['--disable-blink-features=AutomationControlled'],
         )
-        self.page = self.context.new_page()
+        self.browser = None  # persistent context manages its own browser
+        self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
 
     def _save_session(self):
-        """Save browser session"""
+        """Save session backup - persistent context auto-saves to disk."""
         if self.context:
-            self.context.storage_state(path=str(self.session_path / 'state.json'))
-            self.logger.info('Facebook session saved')
+            try:
+                storage_state = self.context.storage_state()
+                state_file = self.session_path / 'state.json'
+                with open(state_file, 'w', encoding='utf-8') as f:
+                    json.dump(storage_state, f, indent=2, ensure_ascii=False)
+                self.logger.info('Facebook session saved')
+            except Exception as e:
+                self.logger.warning(f'Backup state.json save failed (non-fatal): {e}')
 
     def _wait_for_login(self):
         """Navigate to Facebook and wait for login"""
@@ -97,6 +107,9 @@ class FacebookWatcher(BaseWatcher):
             self.logger.warning('Facebook page timeout')
         except Exception as e:
             self.logger.error(f'Error checking Facebook: {e}')
+            # If browser crashed, reset so next cycle re-initializes
+            self.page = None
+            self.context = None
 
         return updates
 
@@ -256,6 +269,8 @@ status: pending
             self.context.close()
         if self.browser:
             self.browser.close()
+        if hasattr(self, '_playwright') and self._playwright:
+            self._playwright.stop()
 
     def run(self):
         """Run with banner"""

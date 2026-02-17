@@ -9,6 +9,7 @@ import sys
 import json
 import requests
 import os
+import re
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -46,10 +47,13 @@ class OdooMCPServer:
         api_key: str = None
     ):
         # Load from environment or use defaults
-        self.url = url or os.getenv('ODOO_URL', 'https://giaic1.odoo.com')
-        self.db = db or os.getenv('ODOO_DB', 'giaic1')
-        self.username = username or os.getenv('ODOO_USERNAME', 'aqsa.gull.dev.ai99@gmail.com')
-        self.api_key = api_key or os.getenv('ODOO_API_KEY') or os.getenv('ODOO_PASSWORD', 'd81dded5ab1c5e428e3058079937940e7837bc69')
+        self.url = os.getenv('ODOO_URL', 'http://localhost:8069') if url is None else url
+        self.db = os.getenv('ODOO_DB', '') if db is None else db
+        self.username = os.getenv('ODOO_USERNAME', '') if username is None else username
+        self.api_key = (
+            (os.getenv('ODOO_API_KEY') or os.getenv('ODOO_PASSWORD', ''))
+            if api_key is None else api_key
+        )
         
         # Set up base URL for JSON-2 API
         self.base_url = f"{self.url.rstrip('/')}/json/2"
@@ -66,6 +70,11 @@ class OdooMCPServer:
     def connect(self) -> bool:
         """Establish connection to Odoo using JSON-2 API with API key authentication"""
         try:
+            if not self.db or not self.username or not self.api_key:
+                raise Exception(
+                    "Missing Odoo credentials. Set ODOO_DB, ODOO_USERNAME, and ODOO_API_KEY (or ODOO_PASSWORD)."
+                )
+
             # Test connection by getting version info
             headers = self._get_headers()
             
@@ -133,6 +142,50 @@ class OdooMCPServer:
             })
             raise
 
+    @staticmethod
+    def _extract_invalid_field(error_message: str) -> Optional[str]:
+        """Extract invalid field name from Odoo error payload/text."""
+        match = re.search(r"Invalid field '([^']+)'", error_message)
+        if match:
+            return match.group(1)
+        return None
+
+    def _search_read_with_fallback(
+        self,
+        model: str,
+        domain: List,
+        fields: List[str],
+        **kwargs
+    ) -> List[Dict]:
+        """
+        Run search_read and automatically retry by dropping invalid fields.
+        This handles schema differences across Odoo deployments/modules.
+        """
+        candidate_fields = list(fields)
+        max_attempts = max(1, len(candidate_fields))
+
+        for _ in range(max_attempts):
+            try:
+                return self._execute(
+                    model,
+                    'search_read',
+                    domain,
+                    fields=candidate_fields,
+                    **kwargs
+                )
+            except Exception as e:
+                invalid_field = self._extract_invalid_field(str(e))
+                if not invalid_field or invalid_field not in candidate_fields:
+                    raise
+                candidate_fields.remove(invalid_field)
+                self._log_action('odoo_field_fallback', {
+                    'model': model,
+                    'removed_field': invalid_field,
+                    'remaining_fields': candidate_fields
+                })
+
+        return []
+
     def _execute(self, model: str, method: str, *args, **kwargs) -> Any:
         """Execute Odoo API call using JSON-2 API format"""
         # Convert *args and **kwargs to the format expected by JSON-2 API
@@ -179,24 +232,38 @@ class OdooMCPServer:
                 params['context'] = kwargs['context']
                 
         elif method == 'create':
-            # For create methods, expect vals_list as the parameter
+            # For JSON-2 create, always provide vals_list explicitly.
+            context = kwargs.pop('context', None)
+            vals_list = None
+
             if args:
-                if isinstance(args[0], dict) and 'vals_list' in args[0]:
-                    # Already in the correct format
-                    params.update(args[0])
+                first_arg = args[0]
+                if isinstance(first_arg, dict) and 'vals_list' in first_arg:
+                    vals_list = first_arg.get('vals_list')
+                elif isinstance(first_arg, dict):
+                    vals_list = [first_arg]
                 else:
-                    # Wrap the values in vals_list
-                    if isinstance(args[0], dict):
-                        params['vals_list'] = [args[0]]
-                    else:
-                        params['vals_list'] = args
-            if kwargs and 'vals_list' not in kwargs:
-                # If kwargs don't already contain vals_list, wrap them
-                params['vals_list'] = [kwargs]
-            elif kwargs:
-                # If kwargs contain vals_list, merge directly
-                params.update(kwargs)
-                
+                    vals_list = list(args)
+
+            if vals_list is None:
+                if 'vals_list' in kwargs:
+                    vals_list = kwargs.pop('vals_list')
+                elif 'vals' in kwargs:
+                    vals_list = [kwargs.pop('vals')]
+                elif kwargs:
+                    # Remaining kwargs are treated as one record payload.
+                    vals_list = [kwargs]
+                    kwargs = {}
+                else:
+                    vals_list = []
+
+            if isinstance(vals_list, dict):
+                vals_list = [vals_list]
+
+            params['vals_list'] = vals_list
+            if context is not None:
+                params['context'] = context
+
         else:
             # For other methods
             if args:
@@ -218,9 +285,9 @@ class OdooMCPServer:
         if state:
             domain.append(['state', '=', state])
 
-        invoices = self._execute(
-            'account.move', 'search_read',
-            domain,
+        invoices = self._search_read_with_fallback(
+            'account.move',
+            domain=domain,
             fields=['name', 'partner_id', 'amount_total', 'amount_residual',
                     'state', 'invoice_date', 'invoice_date_due'],
             limit=limit,
@@ -340,9 +407,9 @@ Delete or move to /Done.
         if state:
             domain.append(['state', '=', state])
 
-        payments = self._execute(
-            'account.payment', 'search_read',
-            domain,
+        payments = self._search_read_with_fallback(
+            'account.payment',
+            domain=domain,
             fields=['name', 'partner_id', 'amount', 'payment_type',
                     'state', 'date'],
             limit=limit,
@@ -439,9 +506,9 @@ Delete or move to /Done.
 
     def get_customers(self, limit: int = 100) -> List[Dict]:
         """Get customers from Odoo"""
-        customers = self._execute(
-            'res.partner', 'search_read',
-            [['customer_rank', '>', 0]],
+        customers = self._search_read_with_fallback(
+            'res.partner',
+            domain=[['customer_rank', '>', 0]],
             fields=['name', 'email', 'phone', 'credit', 'debit'],
             limit=limit
         )
@@ -482,9 +549,9 @@ Delete or move to /Done.
 
     def get_contacts(self, limit: int = 100) -> List[Dict]:
         """Get all contacts (customers and suppliers) from Odoo"""
-        contacts = self._execute(
-            'res.partner', 'search_read',
-            [['is_company', '=', False]],  # Get individuals (contacts)
+        contacts = self._search_read_with_fallback(
+            'res.partner',
+            domain=[['is_company', '=', False]],  # Get individuals (contacts)
             fields=['name', 'email', 'phone', 'function', 'parent_id'],
             limit=limit
         )
@@ -492,9 +559,9 @@ Delete or move to /Done.
 
     def get_companies(self, limit: int = 100) -> List[Dict]:
         """Get companies (customers/suppliers) from Odoo"""
-        companies = self._execute(
-            'res.partner', 'search_read',
-            [['is_company', '=', True]],  # Get companies
+        companies = self._search_read_with_fallback(
+            'res.partner',
+            domain=[['is_company', '=', True]],  # Get companies
             fields=['name', 'email', 'phone', 'website'],
             limit=limit
         )
@@ -607,15 +674,19 @@ Total: {len([i for i in invoices if i.get('invoice_date', '') >= week_ago.strfti
             **details
         }
 
-        logs = []
-        if log_file.exists():
-            with open(log_file, 'r') as f:
-                logs = json.load(f)
+        try:
+            logs = []
+            if log_file.exists():
+                with open(log_file, 'r') as f:
+                    logs = json.load(f)
 
-        logs.append(log_entry)
+            logs.append(log_entry)
 
-        with open(log_file, 'w') as f:
-            json.dump(logs, f, indent=2)
+            with open(log_file, 'w') as f:
+                json.dump(logs, f, indent=2)
+        except PermissionError:
+            # Allow execution in restricted environments where vault logs are read-only.
+            pass
 
 
 def main():
@@ -638,11 +709,11 @@ Usage:
     python odoo_server.py audit                Generate weekly audit
 
 Environment Variables:
-    ODOO_URL       Odoo server URL (default: https://giaic1.odoo.com)
-    ODOO_DB        Database name (default: giaic1)
-    ODOO_USERNAME  Username (default: aqsa.gull.dev.ai99@gmail.com)
-    ODOO_API_KEY   API key for authentication (alternative to ODOO_PASSWORD)
-    ODOO_PASSWORD  Password/API key for authentication (default: your API key)
+    ODOO_URL       Odoo server URL (default: http://localhost:8069)
+    ODOO_DB        Database name (required)
+    ODOO_USERNAME  Username/login (required)
+    ODOO_API_KEY   API key for authentication (required, or use ODOO_PASSWORD)
+    ODOO_PASSWORD  Password/API key for authentication (alternative to ODOO_API_KEY)
 
 Examples:
     export ODOO_URL=https://yourcompany.odoo.com

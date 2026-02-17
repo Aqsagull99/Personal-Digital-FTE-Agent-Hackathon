@@ -160,11 +160,18 @@ class AIEmployeeScheduler:
             schedule='0 8 * * *'
         ))
 
-        # Weekly status report - Sunday 8:00 PM
+        # Weekly CEO briefing - Sunday 8:00 PM
+        results.append(self.add_job(
+            name='ceo_briefing',
+            script='scheduler/tasks/ceo_briefing.py',
+            schedule='0 20 * * 0'
+        ))
+
+        # Weekly status report - Friday 5:00 PM
         results.append(self.add_job(
             name='weekly_report',
             script='scheduler/tasks/weekly_report.py',
-            schedule='0 20 * * 0'
+            schedule='0 17 * * 5'
         ))
 
         return results
