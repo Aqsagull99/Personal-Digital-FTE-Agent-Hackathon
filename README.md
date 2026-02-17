@@ -6,6 +6,12 @@ A local-first, autonomous Digital FTE (Full-Time Equivalent) that manages person
 **Target Tier:** Gold (Autonomous Employee)
 **Architecture:** [AGENTS.md](./AGENTS.md)
 
+## Hackathon Documentation
+
+- Architecture (submission doc): [docs/architecture.md](./docs/architecture.md)
+- Lessons learned (submission doc): [docs/lessons-learned.md](./docs/lessons-learned.md)
+- Detailed agent architecture reference: [AGENTS.md](./AGENTS.md)
+
 ## How It Works
 
 ```
