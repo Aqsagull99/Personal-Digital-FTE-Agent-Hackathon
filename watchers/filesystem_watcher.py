@@ -4,6 +4,8 @@ Bronze Tier Requirement: One working Watcher script
 """
 import sys
 import time
+import json
+import hashlib
 from pathlib import Path
 from datetime import datetime
 from watchdog.observers.polling import PollingObserver as Observer  # Use polling for cross-filesystem support
@@ -56,17 +58,63 @@ class FileSystemWatcher(BaseWatcher):
         super().__init__(vault_path, check_interval=5)
         self.observer = None
         self.processed_files = set()
+        self.state_dir = self.vault_path / 'State'
+        self.state_dir.mkdir(exist_ok=True)
+        self.registry_file = self.state_dir / 'filesystem_watcher_processed.json'
+        self.processed_signatures = self._load_processed_signatures()
 
         # Keywords that indicate priority
         self.urgent_keywords = ['urgent', 'asap', 'critical', 'important', 'payment', 'invoice']
         self.high_keywords = ['request', 'help', 'needed', 'deadline']
+
+    def _load_processed_signatures(self) -> set:
+        """Load persistent signature registry to avoid duplicate processing across restarts."""
+        if not self.registry_file.exists():
+            return set()
+        try:
+            payload = json.loads(self.registry_file.read_text(encoding='utf-8'))
+            if isinstance(payload, list):
+                return set(str(item) for item in payload)
+        except Exception:
+            self.logger.warning(f'Failed to load signature registry: {self.registry_file}')
+        return set()
+
+    def _save_processed_signatures(self):
+        """Persist processed signatures to State folder."""
+        try:
+            signatures = sorted(self.processed_signatures)[-10000:]  # bound file size
+            self.registry_file.write_text(json.dumps(signatures, indent=2), encoding='utf-8')
+        except Exception as e:
+            self.logger.warning(f'Failed to save signature registry: {e}')
+
+    def _file_signature(self, filepath: Path) -> str:
+        """Create stable signature for a file based on path + mtime + size + content prefix."""
+        try:
+            stat = filepath.stat()
+            seed = f"{filepath.resolve()}|{int(stat.st_mtime)}|{stat.st_size}"
+            prefix = filepath.read_bytes()[:2048] if filepath.exists() else b''
+            return hashlib.sha256(seed.encode('utf-8') + prefix).hexdigest()
+        except Exception:
+            return hashlib.sha256(str(filepath).encode('utf-8')).hexdigest()
+
+    def _needs_action_has_signature(self, signature: str) -> bool:
+        """Check if an action file for this signature already exists."""
+        try:
+            for action_file in self.needs_action.glob('ACTION_*.md'):
+                text = action_file.read_text(encoding='utf-8', errors='ignore')
+                if f'original_signature: {signature}' in text:
+                    return True
+        except Exception:
+            return False
+        return False
 
     def check_for_updates(self) -> list:
         """Check Inbox for unprocessed files"""
         new_files = []
         for filepath in self.inbox.iterdir():
             if filepath.is_file() and not filepath.name.startswith('.'):
-                if filepath not in self.processed_files:
+                signature = self._file_signature(filepath)
+                if filepath not in self.processed_files and signature not in self.processed_signatures:
                     new_files.append(filepath)
         return new_files
 
@@ -99,6 +147,7 @@ class FileSystemWatcher(BaseWatcher):
 
     def create_action_file(self, item: Path) -> Path:
         """Create action file in Needs_Action folder"""
+        signature = self._file_signature(item)
         content = item.read_text() if item.suffix == '.md' else f'File: {item.name}'
 
         file_type = self.determine_type(item, content)
@@ -111,6 +160,7 @@ source: inbox_watcher
 priority: {priority}
 created: {timestamp}
 original_file: {item.name}
+original_signature: {signature}
 status: pending
 ---
 
@@ -136,7 +186,8 @@ New {file_type} received via Inbox folder.
             'original_file': item.name,
             'action_file': action_filename,
             'type': file_type,
-            'priority': priority
+            'priority': priority,
+            'signature': signature
         })
 
         return action_path
@@ -144,8 +195,18 @@ New {file_type} received via Inbox folder.
     def process_new_file(self, filepath: Path):
         """Process a newly detected file"""
         try:
+            signature = self._file_signature(filepath)
+            if signature in self.processed_signatures or self._needs_action_has_signature(signature):
+                self.processed_signatures.add(signature)
+                self.processed_files.add(filepath)
+                self._save_processed_signatures()
+                self.logger.info(f'Skipped duplicate file: {filepath.name}')
+                return
+
             action_path = self.create_action_file(filepath)
             self.processed_files.add(filepath)
+            self.processed_signatures.add(signature)
+            self._save_processed_signatures()
             self.logger.info(f'Processed: {filepath.name} -> {action_path.name}')
 
             # Optionally move original to processed or delete

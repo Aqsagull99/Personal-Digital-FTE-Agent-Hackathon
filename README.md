@@ -11,6 +11,8 @@ A local-first, autonomous Digital FTE (Full-Time Equivalent) that manages person
 - Architecture (submission doc): [docs/architecture.md](./docs/architecture.md)
 - Lessons learned (submission doc): [docs/lessons-learned.md](./docs/lessons-learned.md)
 - Platinum runbook (cloud + local split): [docs/platinum-runbook.md](./docs/platinum-runbook.md)
+- Platinum cloud ops: [docs/platinum-cloud-operations.md](./docs/platinum-cloud-operations.md)
+- Platinum Odoo cloud integration: [docs/platinum-odoo-cloud.md](./docs/platinum-odoo-cloud.md)
 - Detailed agent architecture reference: [AGENTS.md](./AGENTS.md)
 
 ## How It Works
@@ -248,6 +250,49 @@ uv run python scheduler/tasks/ceo_briefing.py
 uv run python scheduler/scheduler.py start
 ```
 
+### Frontend + API Bridge
+```bash
+# Terminal 1: start FastAPI bridge for frontend
+uv run uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
+
+# Terminal 2: start Next.js frontend
+cd frontend
+cp .env.example .env.local
+npm install
+npm run dev
+```
+
+Frontend expects these API routes on `http://localhost:8000`:
+- `GET /healthz`
+- `GET /api/executive/summary`
+- `GET /api/accounting/summary`
+- `GET /api/execution/monitor`
+- `GET /api/oversight/queue`
+- `GET /api/compliance/panel`
+- `GET /api/system/monitor`
+- `GET /api/system/health`
+- `GET /api/tasks`
+- `GET /api/tasks/{task_id}`
+- `GET /api/approvals`
+- `GET /api/approvals/{approval_id}`
+- `GET /api/logs`
+- `GET /api/briefings`
+- `GET /api/briefings/{briefing_id}`
+- `GET /api/watchers`
+- `WS /ws/events`
+- `POST /api/approvals/{approval_id}/approve`
+- `POST /api/approvals/{approval_id}/reject`
+- `POST /api/watchers/{watcher_name}/start`
+- `POST /api/watchers/{watcher_name}/stop`
+- `POST /api/watchers/{watcher_name}/restart`
+
+Useful query params:
+- `/api/tasks?limit=50&priority=high&status=pending&type=email`
+- `/api/approvals?limit=25&riskLevel=high&min_amount=100`
+- `/api/logs?channel=payment&date_from=2026-02-01&date_to=2026-02-22&limit=200`
+
+Frontend polls live API every ~8-12 seconds with no runtime mock fallback.
+
 ### With PM2 (Recommended for Always-On)
 ```bash
 npm install -g pm2
@@ -258,6 +303,29 @@ pm2 start scheduler/scheduler.py --interpreter python3 -- start
 
 pm2 save
 pm2 startup
+```
+
+### Platinum Cloud Stack (VM)
+```bash
+# Security gate (must pass before cloud start)
+bash scripts/cloud/cloud_security_guard.sh
+
+# Start 24/7 cloud watchers + draft worker + git sync
+bash scripts/cloud/start_cloud_stack.sh
+
+# Monitor
+pm2 status
+pm2 logs cloud-draft-worker
+```
+
+### Platinum Local Executive Agent
+```bash
+# Start local final-approval + execution agent
+bash scripts/local/start_local_executive.sh
+
+# Monitor
+pm2 status
+pm2 logs local-executive-agent
 ```
 
 ### Via Claude Code Skills

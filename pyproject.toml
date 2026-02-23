@@ -5,6 +5,8 @@ description = "Personal AI Employee - Bronze Tier"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
     "watchdog>=4.0.0",
     "google-api-python-client>=2.0.0",
     "google-auth-httplib2>=0.1.0",

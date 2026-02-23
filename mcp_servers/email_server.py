@@ -107,7 +107,9 @@ class EmailMCPServer:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     str(self.credentials_path), SCOPES
                 )
-                creds = flow.run_local_server(port=9091, authorization_prompt_handler=None)
+                # WSL/headless-friendly auth: do not auto-open browser via xdg-open.
+                # Google loopback redirect supports dynamic localhost ports for desktop apps.
+                creds = flow.run_local_server(port=0, open_browser=False)
 
             with open(self.token_path, 'w') as token:
                 token.write(creds.to_json())
@@ -347,9 +349,10 @@ After approving, the recipient will be asked to be added to known contacts.
                     result = self.send_email(to, subject, body, require_approval=False)
                     results.append(result)
 
-                    # Move to Done
-                    done_path = VAULT_PATH / 'Done' / approval_file.name
-                    approval_file.rename(done_path)
+                    # Move to Done only after successful send.
+                    if result.get('status') == 'success':
+                        done_path = VAULT_PATH / 'Done' / approval_file.name
+                        approval_file.rename(done_path)
 
             except Exception as e:
                 results.append({

@@ -1,0 +1,5 @@
+{$ODOO_DOMAIN} {
+    encode gzip
+    reverse_proxy odoo:8069
+    tls {$ODOO_EMAIL}
+}

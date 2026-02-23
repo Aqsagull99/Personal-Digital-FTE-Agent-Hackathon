@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+node_modules/
 
 # Obsidian
 vault/.obsidian/workspace.json

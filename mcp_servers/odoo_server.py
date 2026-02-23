@@ -54,6 +54,11 @@ class OdooMCPServer:
             (os.getenv('ODOO_API_KEY') or os.getenv('ODOO_PASSWORD', ''))
             if api_key is None else api_key
         )
+        self.agent_role = os.getenv('AGENT_ROLE', 'local').strip().lower()
+        self.cloud_draft_only = (
+            self.agent_role == 'cloud'
+            and os.getenv('CLOUD_DRAFT_ONLY', 'true').strip().lower() == 'true'
+        )
         
         # Set up base URL for JSON-2 API
         self.base_url = f"{self.url.rstrip('/')}/json/2"
@@ -324,6 +329,7 @@ class OdooMCPServer:
                 {
                     'vals_list': [{
                         'move_type': 'out_invoice',
+                        'state': 'draft',
                         'partner_id': partner_id,
                         'invoice_line_ids': [(0, 0, line) for line in lines]
                     }]
@@ -341,7 +347,7 @@ class OdooMCPServer:
             return {
                 'status': 'success',
                 'invoice_id': invoice_id,
-                'message': f'Invoice created: {invoice_id}'
+                'message': f'Invoice created in draft state: {invoice_id}'
             }
 
         except Exception as e:
@@ -426,6 +432,12 @@ Delete or move to /Done.
         require_approval: bool = True
     ) -> Dict:
         """Record a payment"""
+        if self.cloud_draft_only and not require_approval:
+            return {
+                'status': 'error',
+                'message': 'Cloud agent cannot process payments directly. Local approval/execution required.'
+            }
+
         if require_approval:
             return self._create_payment_approval(partner_id, amount, payment_type)
 
@@ -471,6 +483,7 @@ partner_id: {partner_id}
 amount: {amount}
 payment_type: {payment_type}
 status: pending
+owner_required: local
 ---
 
 ## Odoo Payment Request
@@ -490,7 +503,7 @@ Move this file to /Approved folder.
 Delete or move to /Done.
 
 ---
-*Payment requires human approval before recording.*
+*Payment processing requires Local Executive approval/execution.*
 '''
 
         approval_path = self.pending_approval / filename
@@ -500,6 +513,78 @@ Delete or move to /Done.
             'status': 'pending_approval',
             'approval_file': str(approval_path),
             'amount': amount
+        }
+
+    def post_invoice(self, invoice_id: int, require_approval: bool = True) -> Dict:
+        """
+        Post a draft invoice.
+
+        Cloud agent is blocked from direct posting when CLOUD_DRAFT_ONLY is enabled.
+        """
+        if require_approval:
+            return self._create_post_invoice_approval(invoice_id)
+
+        if self.cloud_draft_only:
+            return {
+                'status': 'error',
+                'message': 'Cloud agent cannot post invoices directly. Local approval/execution required.'
+            }
+
+        try:
+            # Odoo JSON-2 custom method call
+            self._json2_call(
+                'account.move',
+                'action_post',
+                {'ids': [invoice_id]}
+            )
+            self._log_action('invoice_posted', {'invoice_id': invoice_id})
+            return {
+                'status': 'success',
+                'invoice_id': invoice_id,
+                'message': f'Invoice posted: {invoice_id}'
+            }
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+
+    def _create_post_invoice_approval(self, invoice_id: int) -> Dict:
+        """Create approval request for posting an invoice."""
+        timestamp = datetime.now()
+        filename = f"ODOO_POST_INVOICE_{timestamp.strftime('%Y%m%d_%H%M%S')}.md"
+
+        content = f'''---
+type: odoo_post_invoice_approval
+action: post_invoice
+created: {timestamp.isoformat()}
+invoice_id: {invoice_id}
+status: pending
+owner_required: local
+---
+
+## Odoo Invoice Posting Request
+
+### Details
+- **Invoice ID:** {invoice_id}
+- **Action:** Post draft invoice
+
+---
+
+### To Approve
+Move this file to /Approved folder.
+
+### To Reject
+Delete or move to /Done.
+
+---
+*Posting invoices requires Local Executive approval/execution.*
+'''
+
+        approval_path = self.pending_approval / filename
+        approval_path.write_text(content)
+
+        return {
+            'status': 'pending_approval',
+            'approval_file': str(approval_path),
+            'invoice_id': invoice_id
         }
 
     # ==================== CUSTOMERS ====================
@@ -703,6 +788,7 @@ Usage:
     python odoo_server.py invoices [state]     List invoices
     python odoo_server.py unpaid               List unpaid invoices
     python odoo_server.py payments             List payments
+    python odoo_server.py post-invoice <id>   Post draft invoice (local only)
     python odoo_server.py customers            List customers
     python odoo_server.py contacts             List contacts
     python odoo_server.py companies            List companies
@@ -753,6 +839,14 @@ Examples:
         print(f"Found {len(payments)} payments:")
         for pay in payments[:10]:
             print(f"  - {pay.get('name')}: ${pay.get('amount', 0):.2f}")
+
+    elif command == 'post-invoice':
+        if len(sys.argv) < 3:
+            print("Usage: python odoo_server.py post-invoice <invoice_id>")
+            sys.exit(1)
+        invoice_id = int(sys.argv[2])
+        result = server.post_invoice(invoice_id=invoice_id, require_approval=False)
+        print(json.dumps(result, indent=2))
 
     elif command == 'customers':
         customers = server.get_customers()

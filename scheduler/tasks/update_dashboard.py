@@ -3,6 +3,7 @@ Scheduled Task: Update Dashboard
 Runs periodically to keep Dashboard.md current
 """
 import json
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -10,6 +11,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 VAULT_PATH = PROJECT_ROOT / 'AI_Employee_Vault'
 if VAULT_PATH.is_symlink():
     VAULT_PATH = VAULT_PATH.resolve()
+
+WRITER_LOCK = VAULT_PATH / 'State' / 'dashboard_writer.lock'
 
 
 def count_files(folder: Path) -> int:
@@ -50,6 +53,19 @@ def get_status_emoji(count: int) -> str:
 
 def update_dashboard():
     """Update Dashboard.md with current counts"""
+    if WRITER_LOCK.exists():
+        try:
+            lock = json.loads(WRITER_LOCK.read_text(encoding='utf-8'))
+            owner = str(lock.get('owner', '')).lower()
+            # Single-writer mode: when owner is local, only Local Executive
+            # process may write Dashboard.md.
+            if owner == 'local' and os.getenv('LOCAL_EXEC_AGENT') != '1':
+                print('[Dashboard] Skipped update: single-writer lock owned by local')
+                return
+        except Exception:
+            # If lock is malformed, proceed with default behavior.
+            pass
+
     timestamp = datetime.now()
     inbox_count = count_files(VAULT_PATH / 'Inbox')
     needs_action_count = count_files(VAULT_PATH / 'Needs_Action')

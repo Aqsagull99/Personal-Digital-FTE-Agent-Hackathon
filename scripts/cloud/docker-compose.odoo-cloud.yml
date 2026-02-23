@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15
+    container_name: odoo_db_cloud
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-odoo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD}
+    volumes:
+      - odoo-db-data:/var/lib/postgresql/data
+
+  odoo:
+    image: odoo:19
+    container_name: odoo_web_cloud
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      HOST: db
+      PORT: 5432
+      USER: ${POSTGRES_USER:-odoo}
+      PASSWORD: ${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD}
+    volumes:
+      - odoo-web-data:/var/lib/odoo
+    expose:
+      - "8069"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8069/web/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+  caddy:
+    image: caddy:2
+    container_name: odoo_caddy_cloud
+    restart: unless-stopped
+    depends_on:
+      - odoo
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ODOO_DOMAIN: ${ODOO_DOMAIN:?set_ODOO_DOMAIN}
+      ODOO_EMAIL: ${ODOO_EMAIL:-admin@example.com}
+    volumes:
+      - ./scripts/cloud/Caddyfile.odoo:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  odoo-db-data:
+  odoo-web-data:
+  caddy-data:
+  caddy-config:

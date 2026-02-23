@@ -36,22 +36,42 @@ REQ_5_ODOO_CLOUD="false"
 REQ_6_A2A_PATH="false"
 REQ_7_DEMO_GATE="false"
 
-# Requirement 1: cloud 24/7 readiness artifacts
-if [[ -f "docs/platinum-runbook.md" ]]; then
-  if rg -q "Cloud 24/7 Deployment|systemd|pm2|uptime" docs/platinum-runbook.md; then
-    REQ_1_CLOUD_247="true"
+# Requirement 1: cloud 24/7 runtime proof (PM2 services online)
+PM2_OK="false"
+if command -v pm2 >/dev/null 2>&1; then
+  if run_and_capture "01_pm2_status" pm2 jlist; then
+    # Require key cloud apps to exist in PM2 list.
+    if rg -q '"name":"cloud-gmail-watcher"' "${OUT_DIR}/01_pm2_status.txt" \
+      && rg -q '"name":"cloud-draft-worker"' "${OUT_DIR}/01_pm2_status.txt" \
+      && rg -q '"name":"cloud-git-sync"' "${OUT_DIR}/01_pm2_status.txt"; then
+      PM2_OK="true"
+    fi
   fi
+fi
+if [[ "${PM2_OK}" == "true" ]]; then
+  REQ_1_CLOUD_247="true"
 fi
 echo "REQ_1_CLOUD_247=${REQ_1_CLOUD_247}" | tee "${OUT_DIR}/01_cloud_247_check.txt"
 
-# Requirement 2: work-zone specialization documented
-if rg -q "Cloud owns|Local owns|draft-only|final authority" docs/platinum-runbook.md; then
-  REQ_2_WORKZONE_SPLIT="true"
+# Requirement 2: work-zone specialization (enforcement in code/config)
+if [[ -f "scripts/cloud/ecosystem.cloud.cjs" && -f "scripts/local/ecosystem.local.cjs" ]]; then
+  if rg -q 'AGENT_ROLE:\s*"cloud"' scripts/cloud/ecosystem.cloud.cjs \
+    && rg -q 'local-executive-agent' scripts/local/ecosystem.local.cjs \
+    && rg -q 'CLOUD_DRAFT_ONLY' scripts/cloud/ecosystem.cloud.cjs; then
+    REQ_2_WORKZONE_SPLIT="true"
+  fi
 fi
 echo "REQ_2_WORKZONE_SPLIT=${REQ_2_WORKZONE_SPLIT}" | tee "${OUT_DIR}/02_workzone_split_check.txt"
 
-# Requirement 3: synced-vault delegation rules documented
-if rg -q "Claim-by-move|Single-writer dashboard|/Updates/" docs/platinum-runbook.md; then
+# Requirement 3: synced-vault delegation + single-writer runtime artifacts
+SYNC_RULES_OK="false"
+if [[ -f "scripts/cloud/cloud_draft_worker.py" && -f "scripts/local/local_executive_agent.py" ]]; then
+  if rg -q 'rename\(target\).*# Atomic claim-by-move|CLAIM' scripts/cloud/cloud_draft_worker.py \
+    && rg -q 'dashboard_writer.lock|Single-writer|LOCAL_EXEC_AGENT' scripts/local/local_executive_agent.py scheduler/tasks/update_dashboard.py; then
+    SYNC_RULES_OK="true"
+  fi
+fi
+if [[ "${SYNC_RULES_OK}" == "true" ]]; then
   REQ_3_SYNC_DELEGATION="true"
 fi
 echo "REQ_3_SYNC_DELEGATION=${REQ_3_SYNC_DELEGATION}" | tee "${OUT_DIR}/03_sync_delegation_check.txt"
@@ -68,19 +88,28 @@ if [[ "${SYNC_SECURITY_OK}" == "true" ]]; then
 fi
 echo "REQ_4_SYNC_SECURITY=${REQ_4_SYNC_SECURITY}" | tee "${OUT_DIR}/04_sync_security_check.txt"
 
-# Requirement 5: Odoo cloud operations documented
-if rg -q "Odoo Cloud VM|HTTPS|backup|health" docs/platinum-runbook.md; then
+# Requirement 5: Odoo cloud HTTPS + health + local-approval controls
+ODOO_CFG_OK="false"
+if [[ -f "scripts/cloud/docker-compose.odoo-cloud.yml" && -f "scripts/cloud/Caddyfile.odoo" ]]; then
+  if rg -q "healthcheck" scripts/cloud/docker-compose.odoo-cloud.yml \
+    && rg -q "tls" scripts/cloud/Caddyfile.odoo \
+    && rg -q "Cloud agent cannot process payments directly" mcp_servers/odoo_server.py \
+    && rg -q "Cloud agent cannot post invoices directly" mcp_servers/odoo_server.py; then
+    ODOO_CFG_OK="true"
+  fi
+fi
+if [[ "${ODOO_CFG_OK}" == "true" ]]; then
   REQ_5_ODOO_CLOUD="true"
 fi
 echo "REQ_5_ODOO_CLOUD=${REQ_5_ODOO_CLOUD}" | tee "${OUT_DIR}/05_odoo_cloud_check.txt"
 
 # Requirement 6: optional A2A phase documented
-if rg -q "Optional A2A Upgrade|Phase 2|A2A" docs/platinum-runbook.md; then
+if rg -q "Optional A2A Upgrade|Phase 2|A2A" docs/platinum-runbook.md docs/platinum-cloud-operations.md; then
   REQ_6_A2A_PATH="true"
 fi
 echo "REQ_6_A2A_PATH=${REQ_6_A2A_PATH}" | tee "${OUT_DIR}/06_a2a_path_check.txt"
 
-# Requirement 7: Platinum demo gate attempt (best-effort local simulation)
+# Requirement 7: Platinum demo gate execution (local simulation + vault transition)
 DEMO_MARKER="PLATINUM_DEMO_${TS}"
 if run_and_capture "07_demo_gate_create_approval" uv run python mcp_servers/email_server.py send "platinum.demo.${TS}@example.com" "Platinum Demo ${TS}" "Demo marker ${DEMO_MARKER}"; then
   PENDING_FILE="$(grep -Rl "${DEMO_MARKER}" AI_Employee_Vault/Pending_Approval/EMAIL_SEND_*.md 2>/dev/null | head -n1 || true)"
@@ -134,6 +163,7 @@ ${OVERALL_STATUS}
 - 7. Platinum demo gate execution: ${REQ_7_DEMO_GATE}
 
 ## Captured Outputs
+- outputs/01_pm2_status.txt
 - outputs/01_cloud_247_check.txt
 - outputs/02_workzone_split_check.txt
 - outputs/03_sync_delegation_check.txt

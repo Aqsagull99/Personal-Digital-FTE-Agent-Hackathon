@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -266,6 +267,7 @@ def _parse_odoo_invoice_lines(text: str) -> List[Dict]:
 
 def process_odoo_approved(seen: Dict[str, Dict]) -> List[Dict]:
     results: List[Dict] = []
+    agent_role = os.getenv("AGENT_ROLE", "local").strip().lower()
 
     try:
         from mcp_servers.odoo_server import OdooMCPServer
@@ -273,6 +275,15 @@ def process_odoo_approved(seen: Dict[str, Dict]) -> List[Dict]:
         return [{"status": "error", "processor": "odoo", "message": str(e)}]
 
     server = OdooMCPServer()
+
+    if agent_role == "cloud":
+        return [
+            {
+                "status": "skipped",
+                "processor": "odoo",
+                "message": "Cloud role does not execute approved Odoo financial actions.",
+            }
+        ]
 
     for file_path in APPROVED.glob("ODOO_INVOICE_*.md"):
         signature = _approval_signature(file_path)
@@ -315,6 +326,49 @@ def process_odoo_approved(seen: Dict[str, Dict]) -> List[Dict]:
                 signature=signature,
                 file_name=file_path.name,
                 processor="odoo_invoice",
+                result_ref=result.get("invoice_id"),
+            )
+
+    for file_path in APPROVED.glob("ODOO_POST_INVOICE_*.md"):
+        signature = _approval_signature(file_path)
+        if signature in seen:
+            archived = _move_to_done(file_path, prefix="DUPLICATE")
+            results.append(
+                {
+                    "status": "skipped_duplicate",
+                    "processor": "odoo_post_invoice",
+                    "file": file_path.name,
+                    "original_file": seen[signature].get("file"),
+                    "archived_as": archived.name,
+                }
+            )
+            continue
+
+        text = file_path.read_text()
+        meta = _parse_frontmatter(text)
+        invoice_id = _safe_int(meta.get("invoice_id", "0"), default=0)
+
+        if invoice_id <= 0:
+            results.append(
+                {
+                    "status": "error",
+                    "processor": "odoo_post_invoice",
+                    "file": file_path.name,
+                    "message": "invalid invoice_id",
+                }
+            )
+            continue
+
+        result = server.post_invoice(invoice_id=invoice_id, require_approval=False)
+        results.append({"processor": "odoo_post_invoice", "file": file_path.name, "result": result})
+
+        if result.get("status") == "success":
+            _move_to_done(file_path)
+            _record_processed_signature(
+                seen=seen,
+                signature=signature,
+                file_name=file_path.name,
+                processor="odoo_post_invoice",
                 result_ref=result.get("invoice_id"),
             )
 
@@ -394,6 +448,7 @@ def process_approved() -> Dict:
         APPROVED.glob("*INSTAGRAM_POST_APPROVAL_*.md")
     )
     odoo_files = list(APPROVED.glob("ODOO_INVOICE_*.md")) + list(APPROVED.glob("ODOO_PAYMENT_*.md"))
+    odoo_files += list(APPROVED.glob("ODOO_POST_INVOICE_*.md"))
 
     email_files, email_sig_map = _filter_duplicate_approved_files(
         email_files, seen, "email", summary
